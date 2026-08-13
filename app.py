@@ -7,6 +7,8 @@ CSV를 올리면 컬럼의 의미를 모르는 상태에서도
 그레인·조인 위험·유효구간을 진단한다. 데이터는 밖으로 나가지 않는다.
 """
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
@@ -43,9 +45,16 @@ files = st.sidebar.file_uploader(
 )
 
 st.sidebar.markdown("---")
+st.sidebar.warning(
+    "**샘플 데이터로 테스트하세요.**\n\n"
+    "회사 실제 데이터·개인정보가 담긴 파일은 올리지 마세요. "
+    "이 앱이 서버에 배포된 상태라면 업로드한 파일이 서버로 전송됩니다.",
+    icon="⚠️",
+)
 st.sidebar.caption(
-    "**데이터는 외부로 전송되지 않습니다.** "
-    "모든 계산이 이 컴퓨터에서 이뤄집니다."
+    "실제 데이터로 진단하려면 [GitHub](https://github.com/kym20b/dataset-scout)에서 "
+    "내려받아 `streamlit run app.py`로 **본인 컴퓨터에서 실행**하세요. "
+    "그때는 파일이 컴퓨터를 벗어나지 않습니다."
 )
 
 if not files:
@@ -65,6 +74,32 @@ if not files:
 
         👈 왼쪽에서 CSV를 올려 시작하세요.
         """
+    )
+
+    st.warning(
+        "**실제 업무 데이터 대신 샘플 데이터로 테스트하세요.** "
+        "이 앱이 서버에 배포된 상태라면 업로드한 파일은 서버로 전송됩니다. "
+        "고객정보·매출 등 민감한 파일은 올리지 마세요.",
+        icon="⚠️",
+    )
+
+    sample = Path(__file__).parent / "samples" / "chatbot_resolution.csv"
+    if sample.exists():
+        st.markdown("#### 샘플 데이터로 바로 해보기")
+        st.caption(
+            "상담 2,000건의 가상 기록입니다. 챗봇과 상담원 중 어느 쪽이 "
+            "문제를 잘 해결하는지 비교해 보세요 — 전체와 난이도별 결과가 다릅니다."
+        )
+        st.download_button(
+            "chatbot_resolution.csv 내려받기",
+            data=sample.read_bytes(),
+            file_name="chatbot_resolution.csv",
+            mime="text/csv",
+        )
+
+    st.caption(
+        "실제 데이터로 진단하려면 [GitHub 저장소](https://github.com/kym20b/dataset-scout)에서 "
+        "내려받아 본인 컴퓨터에서 `streamlit run app.py`로 실행하세요."
     )
     st.stop()
 
