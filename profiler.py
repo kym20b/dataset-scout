@@ -37,7 +37,8 @@ GRAIN_SAMPLE_ROWS = 200_000  # 이보다 크면 표본으로 좁힌 뒤 전체 �
 MIN_GRAIN_DENSITY = 0.20
 JOIN_MIN_OVERLAP = 0.30    # 조인키 후보로 볼 최소 값 겹침 비율
 JOIN_MAX_PAIRS = 4_000     # 컬럼 쌍 비교 상한
-JOIN_MIN_DISTINCT = 20     # 키로 인정할 최소 고유값 수
+JOIN_MIN_DISTINCT = 20         # 키로 인정할 최소 고유값 수
+JOIN_MIN_DISTINCT_NUMERIC = 50  # 숫자 컬럼은 측정값일 확률이 높아 기준을 높인다
 # duration_min(1~60), csat(1~5) 같은 측정값은 다른 숫자 컬럼과 우연히 겹친다.
 # 고유값이 적은 숫자 컬럼은 키 후보에서 제외한다.
 
@@ -459,7 +460,12 @@ def find_join_candidates(tables: dict[str, pd.DataFrame]) -> list[JoinCandidate]
             return False          # 금액·비율 등 연속값은 키가 아니다
         if pd.api.types.is_bool_dtype(s):
             return False
-        return len(keys(t, c)) >= JOIN_MIN_DISTINCT
+        n = len(keys(t, c))
+        # 정수 컬럼은 가격·수량 같은 측정값일 가능성이 높아 기준을 높인다.
+        # (책 정가 37종과 주문 단가 37종은 100% 겹치지만 조인키가 아니다)
+        if pd.api.types.is_integer_dtype(s):
+            return n >= JOIN_MIN_DISTINCT_NUMERIC
+        return n >= JOIN_MIN_DISTINCT
 
     out: list[JoinCandidate] = []
     pairs_checked = 0
@@ -593,24 +599,39 @@ def compute_coverage(name: str, df: pd.DataFrame, date_cols: dict) -> list[Cover
         if len(parsed) == 0:
             continue
 
-        freq = "MS" if info["granularity"] == "month" else "D"
-        periods = parsed.dt.to_period("M" if freq == "MS" else "D")
-        present = set(periods.unique())
-        full = pd.period_range(periods.min(), periods.max(),
-                               freq="M" if freq == "MS" else "D")
-        missing = [str(p) for p in full if p not in present]
+        # 일 단위 컬럼에서 '하루도 기록이 없는 날'은 대부분 자연스러운 공백이라
+        # 잡음이 된다. 반면 '한 달이 통째로 비어 있는 것'은 거의 항상 문제다.
+        # 그래서 일 단위 컬럼도 월 단위로 묶어서 공백을 본다.
+        months = parsed.dt.to_period("M")
+        m_present = set(months.unique())
+        m_full = pd.period_range(months.min(), months.max(), freq="M")
+        m_missing = [str(p) for p in m_full if p not in m_present]
+
+        if info["granularity"] == "month":
+            periods, present, full, missing = months, m_present, m_full, m_missing
+        else:
+            days = parsed.dt.to_period("D")
+            periods = days
+            present = set(days.unique())
+            full = pd.period_range(days.min(), days.max(), freq="D")
+            missing = m_missing          # 일 단위여도 공백은 '월' 기준으로 보고한다
 
         note = ""
         n_null = int(df[col].isna().sum())
         if n_null:
             note = f"결측 {n_null}행({n_null / len(df) * 100:.1f}%). 기록 공백인지 확인 필요."
+        if m_missing:
+            note += (
+                f"{' ' if note else ''}"
+                f"**{', '.join(m_missing[:6])} 월에 기록이 하나도 없습니다.**"
+            )
 
         out.append(
             Coverage(
                 table=name, column=col, granularity=info["granularity"],
                 start=str(periods.min()), end=str(periods.max()),
-                periods_present=len(present), periods_expected=len(full),
-                gaps=missing[:24], note=note,
+                periods_present=len(m_present), periods_expected=len(m_full),
+                gaps=m_missing[:24], note=note,
             )
         )
     return out
@@ -729,9 +750,15 @@ def _refine_type(d: dict, df: pd.DataFrame) -> tuple[str, str]:
 
         if refs:
             ref_txt = ", ".join(sorted({t for _, t in refs}))
+            extra = ""
+            if d["date_cols"]:
+                extra = (
+                    " 날짜 컬럼이 있어 **주문·거래처럼 1행이 곧 사건인 표**일 수도 있습니다. "
+                    "집계 시 다루는 방식은 같습니다."
+                )
             return "마스터", (
                 f"`{key}`가 유일하고 다른 표({ref_txt})가 이 키를 참조합니다. "
-                "1행 = 개체 1개."
+                f"1행 = 개체 1개.{extra}"
             )
 
         return ttype, d["type_reason"]
