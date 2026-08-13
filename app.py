@@ -7,6 +7,8 @@ CSV를 올리면 컬럼의 의미를 모르는 상태에서도
 그레인·조인 위험·유효구간을 진단한다. 데이터는 밖으로 나가지 않는다.
 """
 
+import io
+import zipfile
 from pathlib import Path
 
 import pandas as pd
@@ -21,6 +23,59 @@ from stats_advisor import (
 )
 
 st.set_page_config(page_title="데이터셋 구조 진단기", page_icon="🔍", layout="wide")
+
+SAMPLE_DIR = Path(__file__).parent / "samples"
+
+SAMPLE_SETS = {
+    "온라인 서점": {
+        "slug": "bookstore",
+        "한줄": "표 3개, 조인 위험과 기간 공백",
+        "설명": "도서 200종과 2023년 주문 1,500건, 주문 상세 3,806건입니다.",
+        "files": [
+            "bookstore_books.csv",
+            "bookstore_orders.csv",
+            "bookstore_order_items.csv",
+        ],
+        "볼것": [
+            "**관계 진단** — 주문 ⋈ 주문상세를 조인하면 행이 2.54배로 불어납니다",
+            "**유효구간** — 2023년 7월 기록이 통째로 비어 있습니다",
+            "**구조 진단** — `currency` 컬럼은 전부 `KRW`라 지표로 쓸 수 없습니다",
+        ],
+    },
+    "헬스장 회원": {
+        "slug": "gym",
+        "한줄": "마스터 + 패널, 결측이 많은 컬럼",
+        "설명": "회원 300명과 2024년 월별 출석 2,322건입니다.",
+        "files": ["gym_members.csv", "gym_monthly_visits.csv"],
+        "볼것": [
+            "**구조 진단** — 출석 표는 `회원 × 월` 패널로 잡힙니다",
+            "**구조 진단** — `cancel_date` 결측 71%는 결함이 아니라 '해지하지 않음'입니다",
+            "**검정 추천** — 해지 여부와 출석 수를 비교하면 t검정이 나옵니다",
+        ],
+    },
+    "채용 전형": {
+        "slug": "hiring",
+        "한줄": "표 1개, 층화하면 결론이 뒤집힘",
+        "설명": "지원자 1,200명의 부서·성별·점수·합격 여부입니다.",
+        "files": ["hiring_applications.csv"],
+        "볼것": [
+            "**검정 추천** — 전체로는 남성 합격률이 여성의 1.82배로 나옵니다",
+            "**층화 비교** — 부서로 나누면 4개 부서 전부 여성이 더 높습니다",
+            "여성이 경쟁률 높은 부서에 몰려 지원한 것이 원인입니다",
+        ],
+    },
+    "상담 채널": {
+        "slug": "chatbot",
+        "한줄": "표 1개, 심슨의 역설 최소 예제",
+        "설명": "상담 2,000건의 챗봇·상담원 처리 기록입니다.",
+        "files": ["chatbot_resolution.csv"],
+        "볼것": [
+            "**검정 추천** — 전체 해결률은 챗봇 84.0%, 상담원 45.5%입니다",
+            "**층화 비교** — 난이도로 나누면 두 층 모두 상담원이 앞섭니다",
+            "챗봇에 쉬운 문의가 90% 몰려 있던 것이 원인입니다",
+        ],
+    },
+}
 
 RISK_COLOR = {"위험": "🔴", "주의": "🟡", "안전": "🟢"}
 TYPE_HELP = {
@@ -83,19 +138,50 @@ if not files:
         icon="⚠️",
     )
 
-    sample = Path(__file__).parent / "samples" / "chatbot_resolution.csv"
-    if sample.exists():
-        st.markdown("#### 샘플 데이터로 바로 해보기")
-        st.caption(
-            "상담 2,000건의 가상 기록입니다. 챗봇과 상담원 중 어느 쪽이 "
-            "문제를 잘 해결하는지 비교해 보세요 — 전체와 난이도별 결과가 다릅니다."
-        )
-        st.download_button(
-            "chatbot_resolution.csv 내려받기",
-            data=sample.read_bytes(),
-            file_name="chatbot_resolution.csv",
-            mime="text/csv",
-        )
+    st.markdown("#### 샘플 데이터로 바로 해보기")
+    st.caption("내려받아 위쪽 업로드 칸에 그대로 올리면 진단이 돌아갑니다.")
+
+    picked = st.selectbox(
+        "연습용 데이터셋",
+        list(SAMPLE_SETS),
+        format_func=lambda k: f"{k}  —  {SAMPLE_SETS[k]['한줄']}",
+    )
+    meta = SAMPLE_SETS[picked]
+    files_present = [
+        (f, SAMPLE_DIR / f) for f in meta["files"] if (SAMPLE_DIR / f).exists()
+    ]
+
+    if not files_present:
+        st.info("샘플 파일을 찾지 못했습니다. GitHub 저장소의 `samples/` 폴더를 확인하세요.")
+    else:
+        st.markdown(meta["설명"])
+        st.markdown("**이 데이터에서 볼 것**")
+        for point in meta["볼것"]:
+            st.markdown(f"- {point}")
+
+        if len(files_present) > 1:
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+                for fname, fpath in files_present:
+                    z.write(fpath, arcname=fname)
+            st.download_button(
+                f"📦 {picked} 전체 내려받기 ({len(files_present)}개 파일)",
+                data=buf.getvalue(),
+                file_name=f"{meta['slug']}.zip",
+                mime="application/zip",
+                type="primary",
+            )
+            st.caption("압축을 풀고 CSV를 **한꺼번에** 올려야 조인 진단이 나옵니다.")
+
+        cols = st.columns(min(len(files_present), 3))
+        for i, (fname, fpath) in enumerate(files_present):
+            cols[i % len(cols)].download_button(
+                fname,
+                data=fpath.read_bytes(),
+                file_name=fname,
+                mime="text/csv",
+                key=f"dl_{fname}",
+            )
 
     st.caption(
         "실제 데이터로 진단하려면 [GitHub 저장소](https://github.com/kym20b/dataset-scout)에서 "
